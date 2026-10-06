@@ -193,6 +193,21 @@ SIDES = ["Attacker Main", "Defender Main"]
 
 ROLE_CHANNEL = "🎭│pick-your-roles"
 
+
+def read_only_perms() -> discord.PermissionOverwrite:
+    # Members can read and react, but can't post, or sneak around it with threads.
+    return discord.PermissionOverwrite(
+        send_messages=False,
+        create_public_threads=False,
+        create_private_threads=False,
+        send_messages_in_threads=False,
+    )
+
+
+def read_only_overwrites(guild: discord.Guild) -> dict:
+    return {guild.default_role: read_only_perms()}
+
+
 # Top-to-bottom order: (category, [(channel name, kind, read_only)])
 LAYOUT = [
     ("📌 INFO", [
@@ -376,12 +391,15 @@ async def setup(interaction: discord.Interaction):
             if category is None:
                 category = await guild.create_category(cat_name, position=i)
             for ch_name, kind, read_only in channels:
-                if discord.utils.get(category.channels, name=ch_name):
-                    continue  # never touch what already exists
+                existing = discord.utils.get(category.channels, name=ch_name)
+                if existing:
+                    if read_only and kind == "text":
+                        await existing.set_permissions(guild.default_role, overwrite=read_only_perms())
+                    continue  # otherwise leave existing channels alone
                 if kind == "voice":
                     await guild.create_voice_channel(ch_name, category=category)
                 else:
-                    ow = {guild.default_role: discord.PermissionOverwrite(send_messages=False)} if read_only else {}
+                    ow = read_only_overwrites(guild) if read_only else {}
                     ch = await guild.create_text_channel(ch_name, category=category, overwrites=ow)
                     if ch_name == ROLE_CHANNEL:
                         await post_role_menu(ch)
@@ -419,8 +437,9 @@ async def rolemenu(interaction: discord.Interaction):
         channel = discord.utils.get(guild.text_channels, name=ROLE_CHANNEL)
         if channel is None:
             category = discord.utils.get(guild.categories, name="📌 INFO")
-            ow = {guild.default_role: discord.PermissionOverwrite(send_messages=False)}
+            ow = read_only_overwrites(guild)
             channel = await guild.create_text_channel(ROLE_CHANNEL, category=category, overwrites=ow)
+        await channel.set_permissions(guild.default_role, overwrite=read_only_perms())
         await post_role_menu(channel)
     except discord.Forbidden:
         await interaction.followup.send(
