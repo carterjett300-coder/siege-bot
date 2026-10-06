@@ -10,7 +10,9 @@ from discord import app_commands
 
 TOKEN = os.environ["DISCORD_TOKEN"]  # set in your environment, never hardcode it
 SCORES_FILE = "scores.json"
-HINT_DELAY = 15  # seconds between hints (a bit longer for thumb typing)
+HINT_DELAY = 15  # seconds between hints
+
+# ======================= Guess the operator =======================
 
 # name: (side, speed, country, gadget)
 OPERATORS = {
@@ -120,12 +122,14 @@ class GuessView(discord.ui.View):
         await interaction.response.send_modal(GuessModal(self.game))
 
 
-intents = discord.Intents.default()  # no message-content intent needed anymore
+# ======================= Bot + commands =======================
+
 class Bot(discord.Client):
     async def setup_hook(self):
         self.add_view(RoleView())  # keeps the role dropdowns alive after restarts
 
 
+intents = discord.Intents.default()
 client = Bot(intents=intents)
 tree = app_commands.CommandTree(client)
 active_channels = set()
@@ -171,20 +175,30 @@ async def leaderboard(interaction: discord.Interaction):
     await interaction.response.send_message("🏆 **Leaderboard**\n" + "\n".join(lines))
 
 
-# ---------- Server setup ----------
+# ======================= Roles + layout =======================
+
+# Listed top-to-bottom as they should appear in the role list.
 ROLES = [
     ("Attacker Main", 0xE74C3C), ("Defender Main", 0x3498DB),
     ("PC", 0x95A5A6), ("PlayStation", 0x2E86DE), ("Xbox", 0x2ECC71),
-    ("Copper", 0xB87333), ("Bronze", 0xCD7F32), ("Silver", 0xC0C0C0),
-    ("Gold", 0xF1C40F), ("Platinum", 0x5DADE2), ("Emerald", 0x1ABC9C),
-    ("Diamond", 0x9B59B6), ("Champion", 0xE91E63),
+    ("Champion", 0xE91E63), ("Diamond", 0x9B59B6), ("Emerald", 0x1ABC9C),
+    ("Platinum", 0x5DADE2), ("Gold", 0xF1C40F), ("Silver", 0xC0C0C0),
+    ("Bronze", 0xCD7F32), ("Copper", 0xB87333),
 ]
+COLORS = dict(ROLES)
 
-# (category, [(channel name, kind, read_only)])
+RANKS = ["Copper", "Bronze", "Silver", "Gold", "Platinum", "Emerald", "Diamond", "Champion"]
+PLATFORMS = ["PC", "PlayStation", "Xbox"]
+SIDES = ["Attacker Main", "Defender Main"]
+
+ROLE_CHANNEL = "🎭│pick-your-roles"
+
+# Top-to-bottom order: (category, [(channel name, kind, read_only)])
 LAYOUT = [
     ("📌 INFO", [
         ("👋│welcome", "text", True),
         ("📜│rules", "text", True),
+        (ROLE_CHANNEL, "text", True),
         ("📢│announcements", "text", True),
     ]),
     ("💬 COMMUNITY", [
@@ -207,55 +221,6 @@ LAYOUT = [
 ]
 
 
-@tree.command(name="setup", description="Build the Siege server layout (admin only)")
-@app_commands.guild_only()
-@app_commands.default_permissions(administrator=True)
-async def setup(interaction: discord.Interaction):
-    if not interaction.user.guild_permissions.administrator:
-        await interaction.response.send_message("Admins only.", ephemeral=True)
-        return
-    guild = interaction.guild
-    await interaction.response.defer(ephemeral=True)
-    roles_made = channels_made = 0
-    try:
-        have = {r.name for r in guild.roles}
-        for name, color in ROLES:
-            if name not in have:
-                await guild.create_role(name=name, colour=discord.Colour(color))
-                roles_made += 1
-        for cat_name, channels in LAYOUT:
-            category = discord.utils.get(guild.categories, name=cat_name)
-            if category is None:
-                category = await guild.create_category(cat_name)
-            for ch_name, kind, read_only in channels:
-                if discord.utils.get(category.channels, name=ch_name):
-                    continue  # never touch what already exists
-                if kind == "voice":
-                    await guild.create_voice_channel(ch_name, category=category)
-                else:
-                    ow = {guild.default_role: discord.PermissionOverwrite(send_messages=False)} if read_only else {}
-                    await guild.create_text_channel(ch_name, category=category, overwrites=ow)
-                channels_made += 1
-    except discord.Forbidden:
-        await interaction.followup.send(
-            "I'm missing permissions. Give my role **Manage Channels** and **Manage Roles**, then run /setup again.",
-            ephemeral=True,
-        )
-        return
-    await interaction.followup.send(
-        f"✅ Done! Created {channels_made} channels and {roles_made} roles. Existing stuff was left alone.",
-        ephemeral=True,
-    )
-
-
-# ---------- Role picker ----------
-RANKS = ["Copper", "Bronze", "Silver", "Gold", "Platinum", "Emerald", "Diamond", "Champion"]
-PLATFORMS = ["PC", "PlayStation", "Xbox"]
-SIDES = ["Attacker Main", "Defender Main"]
-COLORS = dict(ROLES)
-ROLE_CHANNEL = "🎭│pick-your-roles"
-
-
 class RoleSelect(discord.ui.Select):
     def __init__(self, custom_id: str, placeholder: str, names: list, single: bool):
         super().__init__(
@@ -272,7 +237,7 @@ class RoleSelect(discord.ui.Select):
         roles = {n: discord.utils.get(guild.roles, name=n) for n in self.names}
         if any(r is None for r in roles.values()):
             await interaction.response.send_message(
-                "Some roles are missing. Ask an admin to run /rolemenu again.", ephemeral=True
+                "Some roles are missing. Ask an admin to run /setup again.", ephemeral=True
             )
             return
         chosen = set(self.values)
@@ -301,7 +266,75 @@ class RoleView(discord.ui.View):
         self.add_item(RoleSelect("roles:side", "⚔️ Pick your main side", SIDES, True))
 
 
-@tree.command(name="rolemenu", description="Post the role picker (admin only)")
+async def post_role_menu(channel: discord.TextChannel):
+    embed = discord.Embed(
+        title="🎭 Pick your roles",
+        description=(
+            "Use the dropdowns below. Tap one, choose, and you're set.\n\n"
+            "🏅 **Rank**: pick **one**. Choosing a new one replaces the old.\n"
+            "🎮 **Platform**: pick all that apply.\n"
+            "⚔️ **Main side**: pick **one**.\n\n"
+            "To remove a role, open the dropdown and untick it."
+        ),
+        color=0xF5A623,
+    )
+    await channel.send(embed=embed, view=RoleView())
+
+
+async def ensure_roles(guild: discord.Guild) -> int:
+    made = 0
+    have = {r.name for r in guild.roles}
+    # New roles land at the bottom, so create bottom-first to get the listed order.
+    for name, color in reversed(ROLES):
+        if name not in have:
+            await guild.create_role(name=name, colour=discord.Colour(color))
+            made += 1
+    return made
+
+
+@tree.command(name="setup", description="Build the full server layout in order (admin only)")
+@app_commands.guild_only()
+@app_commands.default_permissions(administrator=True)
+async def setup(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("Admins only.", ephemeral=True)
+        return
+    guild = interaction.guild
+    await interaction.response.defer(ephemeral=True)
+    roles_made = channels_made = 0
+    try:
+        roles_made = await ensure_roles(guild)
+        for i, (cat_name, channels) in enumerate(LAYOUT):
+            category = discord.utils.get(guild.categories, name=cat_name)
+            if category is None:
+                category = await guild.create_category(cat_name, position=i)
+            for ch_name, kind, read_only in channels:
+                if discord.utils.get(category.channels, name=ch_name):
+                    continue  # never touch what already exists
+                if kind == "voice":
+                    await guild.create_voice_channel(ch_name, category=category)
+                else:
+                    ow = {guild.default_role: discord.PermissionOverwrite(send_messages=False)} if read_only else {}
+                    ch = await guild.create_text_channel(ch_name, category=category, overwrites=ow)
+                    if ch_name == ROLE_CHANNEL:
+                        await post_role_menu(ch)
+                channels_made += 1
+    except discord.Forbidden:
+        await interaction.followup.send(
+            f"I'm missing permissions (made {channels_made} channels, {roles_made} roles so far). "
+            "Give my role **Manage Channels** and **Manage Roles**, then run /setup again. "
+            "It skips whatever already exists.",
+            ephemeral=True,
+        )
+        return
+    await interaction.followup.send(
+        f"✅ Done! Created {channels_made} channels and {roles_made} roles, in order. "
+        "Existing stuff was left alone.",
+        ephemeral=True,
+    )
+
+
+@tree.command(name="rolemenu", description="Re-post the role picker (admin only)")
 @app_commands.guild_only()
 @app_commands.default_permissions(administrator=True)
 async def rolemenu(interaction: discord.Interaction):
@@ -311,26 +344,13 @@ async def rolemenu(interaction: discord.Interaction):
     guild = interaction.guild
     await interaction.response.defer(ephemeral=True)
     try:
-        for name in RANKS + PLATFORMS + SIDES:
-            if discord.utils.get(guild.roles, name=name) is None:
-                await guild.create_role(name=name, colour=discord.Colour(COLORS.get(name, 0)))
+        await ensure_roles(guild)
         channel = discord.utils.get(guild.text_channels, name=ROLE_CHANNEL)
         if channel is None:
             category = discord.utils.get(guild.categories, name="📌 INFO")
             ow = {guild.default_role: discord.PermissionOverwrite(send_messages=False)}
             channel = await guild.create_text_channel(ROLE_CHANNEL, category=category, overwrites=ow)
-        embed = discord.Embed(
-            title="🎭 Pick your roles",
-            description=(
-                "Use the dropdowns below. Tap one, choose, and you're set.\n\n"
-                "🏅 **Rank**: pick **one**. Choosing a new one replaces the old.\n"
-                "🎮 **Platform**: pick all that apply.\n"
-                "⚔️ **Main side**: pick **one**.\n\n"
-                "To remove a role, open the dropdown and untick it."
-            ),
-            color=0xF5A623,
-        )
-        await channel.send(embed=embed, view=RoleView())
+        await post_role_menu(channel)
     except discord.Forbidden:
         await interaction.followup.send(
             "I'm missing permissions. Give my role **Manage Channels** and **Manage Roles**, then try again.",
