@@ -166,6 +166,83 @@ async def leaderboard(interaction: discord.Interaction):
     await interaction.response.send_message("🏆 **Leaderboard**\n" + "\n".join(lines))
 
 
+# ---------- Server setup ----------
+ROLES = [
+    ("Attacker Main", 0xE74C3C), ("Defender Main", 0x3498DB),
+    ("PC", 0x95A5A6), ("PlayStation", 0x2E86DE), ("Xbox", 0x2ECC71),
+    ("Copper", 0xB87333), ("Bronze", 0xCD7F32), ("Silver", 0xC0C0C0),
+    ("Gold", 0xF1C40F), ("Platinum", 0x5DADE2), ("Emerald", 0x1ABC9C),
+    ("Diamond", 0x9B59B6), ("Champion", 0xE91E63),
+]
+
+# (category, [(channel name, kind, read_only)])
+LAYOUT = [
+    ("📌 INFO", [
+        ("👋│welcome", "text", True),
+        ("📜│rules", "text", True),
+        ("📢│announcements", "text", True),
+    ]),
+    ("💬 COMMUNITY", [
+        ("💬│general", "text", False),
+        ("🎬│clips", "text", False),
+        ("😂│memes", "text", False),
+    ]),
+    ("🎯 SIEGE", [
+        ("🔎│lfg", "text", False),
+        ("🧠│strategies", "text", False),
+        ("⚔️│scrims", "text", False),
+        ("🎮│guess-the-operator", "text", False),
+    ]),
+    ("🔊 VOICE", [
+        ("🔊 Lobby", "voice", False),
+        ("🔊 Squad 1", "voice", False),
+        ("🔊 Squad 2", "voice", False),
+        ("🔊 Squad 3", "voice", False),
+    ]),
+]
+
+
+@tree.command(name="setup", description="Build the Siege server layout (admin only)")
+@app_commands.guild_only()
+@app_commands.default_permissions(administrator=True)
+async def setup(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("Admins only.", ephemeral=True)
+        return
+    guild = interaction.guild
+    await interaction.response.defer(ephemeral=True)
+    roles_made = channels_made = 0
+    try:
+        have = {r.name for r in guild.roles}
+        for name, color in ROLES:
+            if name not in have:
+                await guild.create_role(name=name, colour=discord.Colour(color))
+                roles_made += 1
+        for cat_name, channels in LAYOUT:
+            category = discord.utils.get(guild.categories, name=cat_name)
+            if category is None:
+                category = await guild.create_category(cat_name)
+            for ch_name, kind, read_only in channels:
+                if discord.utils.get(category.channels, name=ch_name):
+                    continue  # never touch what already exists
+                if kind == "voice":
+                    await guild.create_voice_channel(ch_name, category=category)
+                else:
+                    ow = {guild.default_role: discord.PermissionOverwrite(send_messages=False)} if read_only else {}
+                    await guild.create_text_channel(ch_name, category=category, overwrites=ow)
+                channels_made += 1
+    except discord.Forbidden:
+        await interaction.followup.send(
+            "I'm missing permissions. Give my role **Manage Channels** and **Manage Roles**, then run /setup again.",
+            ephemeral=True,
+        )
+        return
+    await interaction.followup.send(
+        f"✅ Done! Created {channels_made} channels and {roles_made} roles. Existing stuff was left alone.",
+        ephemeral=True,
+    )
+
+
 @client.event
 async def on_ready():
     await tree.sync()
