@@ -292,6 +292,72 @@ async def ensure_roles(guild: discord.Guild) -> int:
     return made
 
 
+RULES_CHANNEL = "📜│rules"
+
+
+def build_rules_embed(guild: discord.Guild) -> discord.Embed:
+    roles_ch = discord.utils.get(guild.text_channels, name=ROLE_CHANNEL)
+    pick = roles_ch.mention if roles_ch else "the pick-your-roles channel"
+    e = discord.Embed(
+        title="🛡️ OPERATION: RULES",
+        description="Read the briefing before you drop in.",
+        color=0xC0392B,
+    )
+    e.add_field(
+        name="🤝 CONDUCT",
+        value=(
+            "**`01`** **Respect the squad.** No harassment, hate speech, or slurs.\n"
+            "**`02`** **Keep it cool.** No flaming teammates or toxic spam.\n"
+            "**`03`** **No cheating.** No hacks, boosting, or account selling."
+        ),
+        inline=False,
+    )
+    e.add_field(
+        name="📍 CHANNELS",
+        value=(
+            "**`04`** **Stay on target.** Clips in clips, teams in lfg, memes in memes.\n"
+            "**`05`** **No spam or ads.** No invite links or self-promo without a mod's OK.\n"
+            "**`06`** **Keep it clean.** No NSFW, gore, or anything illegal."
+        ),
+        inline=False,
+    )
+    e.add_field(
+        name="🔒 SAFETY",
+        value=(
+            "**`07`** **Protect your intel.** No sharing personal info. No doxxing, ever.\n"
+            "**`08`** **Listen to command.** Mods have the final say. Disagree? Message a mod privately."
+        ),
+        inline=False,
+    )
+    e.add_field(
+        name="✅ READY TO DEPLOY?",
+        value=f"Head to {pick} and grab your **rank**, **platform**, and **main side**.",
+        inline=False,
+    )
+    e.set_footer(text="Break the rules and you may get a warning, mute, or ban.")
+    return e
+
+
+async def post_rules(channel: discord.TextChannel):
+    await channel.send(embed=build_rules_embed(channel.guild))
+
+
+@tree.command(name="rules", description="Post the rules embed (admin only)")
+@app_commands.guild_only()
+@app_commands.default_permissions(administrator=True)
+async def rules(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("Admins only.", ephemeral=True)
+        return
+    channel = discord.utils.get(interaction.guild.text_channels, name=RULES_CHANNEL) or interaction.channel
+    try:
+        await post_rules(channel)
+    except discord.Forbidden:
+        await interaction.response.send_message("I can't send messages in that channel.", ephemeral=True)
+        return
+    await interaction.response.send_message(f"✅ Rules posted in {channel.mention}", ephemeral=True)
+
+
 @tree.command(name="setup", description="Build the full server layout in order (admin only)")
 @app_commands.guild_only()
 @app_commands.default_permissions(administrator=True)
@@ -302,6 +368,7 @@ async def setup(interaction: discord.Interaction):
     guild = interaction.guild
     await interaction.response.defer(ephemeral=True)
     roles_made = channels_made = 0
+    new_rules = None
     try:
         roles_made = await ensure_roles(guild)
         for i, (cat_name, channels) in enumerate(LAYOUT):
@@ -318,7 +385,11 @@ async def setup(interaction: discord.Interaction):
                     ch = await guild.create_text_channel(ch_name, category=category, overwrites=ow)
                     if ch_name == ROLE_CHANNEL:
                         await post_role_menu(ch)
+                    if ch_name == RULES_CHANNEL:
+                        new_rules = ch
                 channels_made += 1
+        if new_rules:
+            await post_rules(new_rules)  # after the roles channel exists, so it can be linked
     except discord.Forbidden:
         await interaction.followup.send(
             f"I'm missing permissions (made {channels_made} channels, {roles_made} roles so far). "
