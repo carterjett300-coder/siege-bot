@@ -121,7 +121,12 @@ class GuessView(discord.ui.View):
 
 
 intents = discord.Intents.default()  # no message-content intent needed anymore
-client = discord.Client(intents=intents)
+class Bot(discord.Client):
+    async def setup_hook(self):
+        self.add_view(RoleView())  # keeps the role dropdowns alive after restarts
+
+
+client = Bot(intents=intents)
 tree = app_commands.CommandTree(client)
 active_channels = set()
 
@@ -241,6 +246,98 @@ async def setup(interaction: discord.Interaction):
         f"✅ Done! Created {channels_made} channels and {roles_made} roles. Existing stuff was left alone.",
         ephemeral=True,
     )
+
+
+# ---------- Role picker ----------
+RANKS = ["Copper", "Bronze", "Silver", "Gold", "Platinum", "Emerald", "Diamond", "Champion"]
+PLATFORMS = ["PC", "PlayStation", "Xbox"]
+SIDES = ["Attacker Main", "Defender Main"]
+COLORS = dict(ROLES)
+ROLE_CHANNEL = "🎭│pick-your-roles"
+
+
+class RoleSelect(discord.ui.Select):
+    def __init__(self, custom_id: str, placeholder: str, names: list, single: bool):
+        super().__init__(
+            custom_id=custom_id,
+            placeholder=placeholder,
+            min_values=0,  # deselect everything to clear
+            max_values=1 if single else len(names),
+            options=[discord.SelectOption(label=n) for n in names],
+        )
+        self.names = names
+
+    async def callback(self, interaction: discord.Interaction):
+        guild, member = interaction.guild, interaction.user
+        roles = {n: discord.utils.get(guild.roles, name=n) for n in self.names}
+        if any(r is None for r in roles.values()):
+            await interaction.response.send_message(
+                "Some roles are missing. Ask an admin to run /rolemenu again.", ephemeral=True
+            )
+            return
+        chosen = set(self.values)
+        to_add = [r for n, r in roles.items() if n in chosen and r not in member.roles]
+        to_remove = [r for n, r in roles.items() if n not in chosen and r in member.roles]
+        try:
+            if to_remove:
+                await member.remove_roles(*to_remove, reason="Role picker")
+            if to_add:
+                await member.add_roles(*to_add, reason="Role picker")
+        except discord.Forbidden:
+            await interaction.response.send_message(
+                "I can't hand out those roles. An admin needs to drag my role above them in Server Settings → Roles.",
+                ephemeral=True,
+            )
+            return
+        text = ", ".join(sorted(chosen)) if chosen else "cleared"
+        await interaction.response.send_message(f"✅ Updated: **{text}**", ephemeral=True)
+
+
+class RoleView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(RoleSelect("roles:rank", "🏅 Pick your rank (one)", RANKS, True))
+        self.add_item(RoleSelect("roles:platform", "🎮 Pick your platform(s)", PLATFORMS, False))
+        self.add_item(RoleSelect("roles:side", "⚔️ Pick your main side", SIDES, True))
+
+
+@tree.command(name="rolemenu", description="Post the role picker (admin only)")
+@app_commands.guild_only()
+@app_commands.default_permissions(administrator=True)
+async def rolemenu(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("Admins only.", ephemeral=True)
+        return
+    guild = interaction.guild
+    await interaction.response.defer(ephemeral=True)
+    try:
+        for name in RANKS + PLATFORMS + SIDES:
+            if discord.utils.get(guild.roles, name=name) is None:
+                await guild.create_role(name=name, colour=discord.Colour(COLORS.get(name, 0)))
+        channel = discord.utils.get(guild.text_channels, name=ROLE_CHANNEL)
+        if channel is None:
+            category = discord.utils.get(guild.categories, name="📌 INFO")
+            ow = {guild.default_role: discord.PermissionOverwrite(send_messages=False)}
+            channel = await guild.create_text_channel(ROLE_CHANNEL, category=category, overwrites=ow)
+        embed = discord.Embed(
+            title="🎭 Pick your roles",
+            description=(
+                "Use the dropdowns below. Tap one, choose, and you're set.\n\n"
+                "🏅 **Rank**: pick **one**. Choosing a new one replaces the old.\n"
+                "🎮 **Platform**: pick all that apply.\n"
+                "⚔️ **Main side**: pick **one**.\n\n"
+                "To remove a role, open the dropdown and untick it."
+            ),
+            color=0xF5A623,
+        )
+        await channel.send(embed=embed, view=RoleView())
+    except discord.Forbidden:
+        await interaction.followup.send(
+            "I'm missing permissions. Give my role **Manage Channels** and **Manage Roles**, then try again.",
+            ephemeral=True,
+        )
+        return
+    await interaction.followup.send(f"✅ Role picker posted in {channel.mention}", ephemeral=True)
 
 
 @client.event
